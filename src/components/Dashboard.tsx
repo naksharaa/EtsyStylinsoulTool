@@ -10,6 +10,38 @@ interface DashboardProps {
 }
 
 export function Dashboard({ listings, lastSyncAt }: DashboardProps) {
+  // Show empty state if no real data
+  if (listings.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500">StylinSoulMetalArt Overview</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+          <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Package className="w-8 h-8 text-gray-400" />
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No Listings Data</h3>
+          <p className="text-sm text-gray-500 max-w-md mx-auto mb-4">
+            {lastSyncAt
+              ? 'Sync completed but returned zero listings. Check Diagnostics to debug the Etsy API connection.'
+              : 'Your Etsy shop has not been synced yet. Click "Sync Etsy" in the sidebar to import your real listings.'}
+          </p>
+          <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 max-w-sm mx-auto text-left">
+            <p className="text-xs text-amber-800 font-medium mb-1">If sync returns zero listings:</p>
+            <ul className="text-xs text-amber-700 space-y-1">
+              <li>• Check Diagnostics page for API errors</li>
+              <li>• Verify OAuth scopes include listings_r</li>
+              <li>• Confirm shop name matches exactly</li>
+              <li>• Check that the shop has active listings</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const stats = useMemo(() => {
     const active = listings.filter(l => l.state === 'active');
     const drafts = listings.filter(l => l.state === 'draft');
