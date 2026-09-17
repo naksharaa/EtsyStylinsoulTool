@@ -1,12 +1,18 @@
 // ============================================
 // Etsy Open API v3 Client
 // ============================================
-// All Etsy API calls must happen server-side
-// This module handles OAuth, token refresh, rate limiting
+// Based on official Etsy OAuth 2.0 documentation:
+// https://developer.etsy.com/documentation/essentials/authentication
+//
+// Token endpoint: POST https://api.etsy.com/v3/public/oauth/token
+// Auth endpoint:  GET  https://www.etsy.com/oauth/connect
+// API base:       https://api.etsy.com/v3
 
 import type { EtsyOAuthTokens, EtsyOAuthState } from '../../types';
 
-const ETSY_API_BASE = 'https://openapi.etsy.com/v3';
+const ETSY_API_BASE = 'https://api.etsy.com/v3';
+const ETSY_AUTH_URL = 'https://www.etsy.com/oauth/connect';
+const ETSY_TOKEN_URL = 'https://api.etsy.com/v3/public/oauth/token';
 
 // ---- PKCE Utilities ----
 export function generateCodeVerifier(): string {
@@ -33,48 +39,66 @@ export function generateState(): string {
   return base64UrlEncode(array);
 }
 
-// ---- OAuth URL Builder ----
-export function buildAuthorizationUrl(keystring: string, redirectUri: string, codeChallenge: string, state: string): string {
+// ---- OAuth Authorization URL ----
+export function buildAuthorizationUrl(
+  keystring: string,
+  redirectUri: string,
+  codeChallenge: string,
+  state: string,
+  scopes: string[] = ['listings_r', 'listings_w', 'transactions_r', 'shops_r', 'shops_w']
+): string {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: keystring,
     redirect_uri: redirectUri,
+    scope: scopes.join(' '),
+    state: state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
-    state: state,
-    scope: 'listings_r listings_w transactions_r shops_r shops_w',
   });
-  return `https://www.etsy.com/oauth/connect?${params.toString()}`;
+  return `${ETSY_AUTH_URL}?${params.toString()}`;
 }
 
-// ---- Token Exchange ----
+// ---- Token Exchange (Step 3 of OAuth flow) ----
+// POST https://api.etsy.com/v3/public/oauth/token
+// Body: application/x-www-form-urlencoded
+// NOTE: No x-api-key header needed for token exchange per Etsy docs
 export async function exchangeCodeForTokens(
   code: string,
   keystring: string,
   redirectUri: string,
   codeVerifier: string
 ): Promise<EtsyOAuthTokens> {
-  const response = await fetch(`${ETSY_API_BASE}/auth/token`, {
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: keystring,
+    redirect_uri: redirectUri,
+    code: code,
+    code_verifier: codeVerifier,
+  });
+
+  const response = await fetch(ETSY_TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'x-api-key': keystring,
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirectUri,
-      code_verifier: codeVerifier,
-      client_id: keystring,
-    }),
+    body: body.toString(),
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Token exchange failed: ${error}`);
+    let errorDetail = '';
+    try {
+      const errorData = await response.json();
+      errorDetail = errorData.error_description || errorData.error || JSON.stringify(errorData);
+    } catch {
+      errorDetail = await response.text();
+    }
+    throw new Error(`Token exchange failed (HTTP ${response.status}): ${errorDetail}`);
   }
 
   const data = await response.json();
+  
+  // Etsy returns access_token with user_id prefix: "12345678.token_string"
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
@@ -87,26 +111,31 @@ export async function exchangeCodeForTokens(
 // ---- Token Refresh ----
 export async function refreshAccessToken(
   refreshToken: string,
-  keystring: string,
-  redirectUri: string
+  keystring: string
 ): Promise<EtsyOAuthTokens> {
-  const response = await fetch(`${ETSY_API_BASE}/auth/token`, {
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: keystring,
+    refresh_token: refreshToken,
+  });
+
+  const response = await fetch(ETSY_TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'x-api-key': keystring,
     },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      redirect_uri: redirectUri,
-      client_id: keystring,
-    }),
+    body: body.toString(),
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Token refresh failed: ${error}`);
+    let errorDetail = '';
+    try {
+      const errorData = await response.json();
+      errorDetail = errorData.error_description || errorData.error || JSON.stringify(errorData);
+    } catch {
+      errorDetail = await response.text();
+    }
+    throw new Error(`Token refresh failed (HTTP ${response.status}): ${errorDetail}`);
   }
 
   const data = await response.json();
@@ -124,7 +153,7 @@ class RateLimiter {
   private queue: Array<() => Promise<void>> = [];
   private processing = false;
   private lastRequestTime = 0;
-  private minInterval = 100; // 100ms between requests (10 QPS safe)
+  private minInterval = 200; // 200ms = 5 QPS (safe for Etsy)
 
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -160,31 +189,33 @@ class RateLimiter {
 const rateLimiter = new RateLimiter();
 
 // ---- Etsy API Client ----
+// For all API calls AFTER authentication
+// x-api-key header format: <keystring>:<shared_secret>
 export class EtsyClient {
   private keystring: string;
+  private sharedSecret: string;
   private accessToken: string;
   private refreshToken: string;
   private expiresAt: number;
-  private redirectUri: string;
   private onTokenRefresh?: (tokens: EtsyOAuthTokens) => void;
 
   constructor(
     keystring: string,
+    sharedSecret: string,
     tokens: EtsyOAuthTokens,
-    redirectUri: string,
     onTokenRefresh?: (tokens: EtsyOAuthTokens) => void
   ) {
     this.keystring = keystring;
+    this.sharedSecret = sharedSecret;
     this.accessToken = tokens.access_token;
     this.refreshToken = tokens.refresh_token;
     this.expiresAt = tokens.expires_at;
-    this.redirectUri = redirectUri;
     this.onTokenRefresh = onTokenRefresh;
   }
 
   private async ensureValidToken(): Promise<void> {
-    if (Date.now() >= this.expiresAt - 60000) { // 1 minute buffer
-      const newTokens = await refreshAccessToken(this.refreshToken, this.keystring, this.redirectUri);
+    if (Date.now() >= this.expiresAt - 60000) {
+      const newTokens = await refreshAccessToken(this.refreshToken, this.keystring);
       this.accessToken = newTokens.access_token;
       this.refreshToken = newTokens.refresh_token;
       this.expiresAt = newTokens.expires_at;
@@ -206,8 +237,9 @@ export class EtsyClient {
         url += `?${searchParams.toString()}`;
       }
 
+      // x-api-key format per Etsy docs: keystring:shared_secret
       const headers: Record<string, string> = {
-        'x-api-key': this.keystring,
+        'x-api-key': `${this.keystring}:${this.sharedSecret}`,
         'Authorization': `Bearer ${this.accessToken}`,
         'Content-Type': 'application/json',
       };
@@ -257,15 +289,22 @@ export class EtsyClient {
   }
 
   async getShopReceipts(shopId: number, params?: { limit?: number; offset?: number }) {
-    return this.request<any>('GET', `/application/shops/${shopId}/receipts`, { params: params as any });
+    const p: Record<string, string> = {};
+    if (params?.limit) p.limit = String(params.limit);
+    if (params?.offset) p.offset = String(params.offset);
+    return this.request<any>('GET', `/application/shops/${shopId}/receipts`, { params: p });
   }
 
   // ---- Listing Endpoints ----
   async getListings(shopId: number, params?: { limit?: number; offset?: number; state?: string }) {
-    return this.request<any>('GET', `/application/shops/${shopId}/listings`, { params: params as any });
+    const p: Record<string, string> = {};
+    if (params?.limit) p.limit = String(params.limit);
+    if (params?.offset) p.offset = String(params.offset);
+    if (params?.state) p.state = params.state;
+    return this.request<any>('GET', `/application/shops/${shopId}/listings`, { params: p });
   }
 
-  async getListing(shopId: number, listingId: number) {
+  async getListing(listingId: number) {
     return this.request<any>('GET', `/application/listings/${listingId}`);
   }
 
@@ -277,10 +316,6 @@ export class EtsyClient {
     return this.request<any>('GET', `/application/listings/${listingId}/inventory`);
   }
 
-  async createListing(shopId: number, data: any) {
-    return this.request<any>('POST', `/application/shops/${shopId}/listings`, { body: data });
-  }
-
   async updateListing(listingId: number, data: any) {
     return this.request<any>('PUT', `/application/listings/${listingId}`, { body: data });
   }
@@ -289,36 +324,26 @@ export class EtsyClient {
     return this.request<any>('PUT', `/application/listings/${listingId}/inventory`, { body: data });
   }
 
-  async deleteListing(listingId: number) {
-    return this.request<any>('DELETE', `/application/listings/${listingId}`);
-  }
-
   // ---- Transaction Endpoints ----
   async getShopTransactions(shopId: number, params?: { limit?: number; offset?: number }) {
-    return this.request<any>('GET', `/application/shops/${shopId}/transactions`, { params: params as any });
+    const p: Record<string, string> = {};
+    if (params?.limit) p.limit = String(params.limit);
+    if (params?.offset) p.offset = String(params.offset);
+    return this.request<any>('GET', `/application/shops/${shopId}/transactions`, { params: p });
   }
 
-  async getListingTransactions(listingId: number, params?: { limit?: number; offset?: number }) {
-    return this.request<any>('GET', `/application/listings/${listingId}/transactions`, { params: params as any });
-  }
-
-  // ---- Taxonomy Endpoints ----
+  // ---- Taxonomy ----
   async getTaxonomyCategories() {
     return this.request<any>('GET', `/application/seller-taxonomy/nodes`);
   }
 
-  async getTaxonomyProperties(taxonomyId: number) {
-    return this.request<any>('GET', `/application/seller-taxonomy/nodes/${taxonomyId}/properties`);
-  }
-
-  // ---- Marketplace Search (public) ----
+  // ---- Marketplace Search ----
   async searchListings(params: { search_term: string; limit?: number; offset?: number; sort_on?: string }) {
-    return this.request<any>('GET', `/application/listings/active`, { params: params as any });
-  }
-
-  // ---- Shipping Endpoints ----
-  async getShippingProfiles(shopId: number) {
-    return this.request<any>('GET', `/application/shops/${shopId}/shipping-profiles`);
+    const p: Record<string, string> = { search_term: params.search_term };
+    if (params.limit) p.limit = String(params.limit);
+    if (params.offset) p.offset = String(params.offset);
+    if (params.sort_on) p.sort_on = params.sort_on;
+    return this.request<any>('GET', `/application/listings/active`, { params: p });
   }
 }
 
@@ -334,46 +359,39 @@ export class EtsyAPIError extends Error {
   }
 }
 
-// ---- Token Storage (Server-side only) ----
-// In production, tokens are encrypted and stored in database
-// This is a client-side simulation for the demo
-const TOKEN_STORAGE_KEY = 'etsy_oauth_state';
+// ---- Storage Helpers ----
+const OAUTH_STATE_KEY = 'etsy_oauth_state';
+const TOKENS_KEY = 'etsy_tokens';
 
 export function saveOAuthState(state: EtsyOAuthState): void {
-  sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(state));
+  sessionStorage.setItem(OAUTH_STATE_KEY, JSON.stringify(state));
 }
 
 export function getOAuthState(): EtsyOAuthState | null {
-  const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  const stored = sessionStorage.getItem(OAUTH_STATE_KEY);
   if (!stored) return null;
-  try {
-    return JSON.parse(stored);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(stored); } catch { return null; }
 }
 
 export function clearOAuthState(): void {
-  sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  sessionStorage.removeItem(OAUTH_STATE_KEY);
 }
 
-// ---- Token Storage for Demo ----
-const DEMO_TOKEN_KEY = 'etsy_demo_tokens';
-
-export function saveDemoTokens(tokens: EtsyOAuthTokens): void {
-  sessionStorage.setItem(DEMO_TOKEN_KEY, JSON.stringify(tokens));
+export function saveTokens(tokens: EtsyOAuthTokens): void {
+  sessionStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
 }
 
-export function getDemoTokens(): EtsyOAuthTokens | null {
-  const stored = sessionStorage.getItem(DEMO_TOKEN_KEY);
+export function getTokens(): EtsyOAuthTokens | null {
+  const stored = sessionStorage.getItem(TOKENS_KEY);
   if (!stored) return null;
-  try {
-    return JSON.parse(stored);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(stored); } catch { return null; }
 }
 
-export function clearDemoTokens(): void {
-  sessionStorage.removeItem(DEMO_TOKEN_KEY);
+export function clearTokens(): void {
+  sessionStorage.removeItem(TOKENS_KEY);
 }
+
+// Legacy alias for compatibility
+export const saveDemoTokens = saveTokens;
+export const getDemoTokens = getTokens;
+export const clearDemoTokens = clearTokens;

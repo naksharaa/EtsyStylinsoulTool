@@ -12,19 +12,19 @@ import {
   type ConnectionState,
   type ApiTestResult,
 } from '../lib/etsy/connection';
-import { getDemoTokens } from '../lib/etsy/client';
+import { getTokens } from '../lib/etsy/client';
 
 export function EtsyDiagnostics() {
   const [connState, setConnState] = useState<ConnectionState>(getConnectionState());
   const [config, setConfig] = useState(getEtsyConfig());
-  const [tokens, setTokens] = useState(getDemoTokens());
+  const [tokens, setTokens] = useState(getTokens());
   const [testResults, setTestResults] = useState<ApiTestResult[]>([]);
   const [isTesting, setIsTesting] = useState<string | null>(null);
 
   useEffect(() => {
     setConnState(getConnectionState());
     setConfig(getEtsyConfig());
-    setTokens(getDemoTokens());
+    setTokens(getTokens());
   }, []);
 
   const runTest = async (testName: string) => {
@@ -36,7 +36,7 @@ export function EtsyDiagnostics() {
 
       switch (testName) {
         case 'connection':
-          result = await testEtsyConnection(tokens, config);
+          result = await testEtsyConnection(config, tokens);
           break;
         case 'listings':
           if (!connState.shopId) {
@@ -48,7 +48,7 @@ export function EtsyDiagnostics() {
               timestamp: Date.now(),
             };
           } else {
-            result = await testActiveListings(tokens, config, connState.shopId);
+            result = await testActiveListings(config, tokens, connState.shopId);
           }
           break;
         case 'orders':
@@ -61,7 +61,7 @@ export function EtsyDiagnostics() {
               timestamp: Date.now(),
             };
           } else {
-            result = await testOrders(tokens, config, connState.shopId);
+            result = await testOrders(config, tokens, connState.shopId);
           }
           break;
         default:
@@ -173,6 +173,11 @@ export function EtsyDiagnostics() {
             label="Etsy Keystring"
             value={config?.keystring ? maskSecret(config.keystring) : 'NOT CONFIGURED'}
             status={config?.keystring ? 'success' : 'error'}
+          />
+          <StatusRow
+            label="Shared Secret"
+            value={config?.sharedSecret ? '•••••••• (configured)' : 'NOT CONFIGURED'}
+            status={config?.sharedSecret ? 'success' : 'error'}
           />
           <StatusRow
             label="Redirect URI"
