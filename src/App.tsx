@@ -6,7 +6,7 @@
 // No mock/sample data is used in production flows.
 
 import { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, List, Search, Target, Users, PenTool, Settings,
   TrendingUp, Bookmark, History, BarChart3, Zap, Menu,
@@ -166,7 +166,7 @@ function App() {
   const config = getEtsyConfig();
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <div className="min-h-screen bg-gray-50 flex">
         {/* Sidebar */}
         <Sidebar
@@ -277,7 +277,7 @@ function App() {
           </div>
         </main>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 
