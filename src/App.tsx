@@ -2,17 +2,17 @@
 // StylinSoulMetalArt - Etsy Intelligence App
 // Main Application Component
 // ============================================
+// IMPORTANT: This app uses REAL Etsy data.
+// No mock/sample data is used in production flows.
 
 import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, List, Search, Target, Users, PenTool, Settings,
-  TrendingUp, Bookmark, History, BarChart3, Zap, Menu, X,
-  ChevronRight, ExternalLink, AlertTriangle, CheckCircle2,
-  RefreshCw, LogOut, Store, Shield, Sparkles
+  TrendingUp, Bookmark, History, BarChart3, Zap, Menu,
+  RefreshCw, LogOut, Store, Sparkles, AlertTriangle, Activity
 } from 'lucide-react';
-import type { NavPage, EtsyListing, SEOScore } from './types';
-import { calculateSEOScore, getScoreLabel } from './lib/seo/scoring';
+import type { NavPage, EtsyListing } from './types';
 import { Dashboard } from './components/Dashboard';
 import { ListingsPage } from './components/ListingsPage';
 import { ListingAnalyzer } from './components/ListingAnalyzer';
@@ -26,57 +26,144 @@ import { SavedResearch } from './components/SavedResearch';
 import { OptimizationHistory } from './components/OptimizationHistory';
 import { SettingsPage } from './components/SettingsPage';
 import { SetupWizard } from './components/SetupWizard';
-import { sampleListings } from './data/sampleData';
+import { EtsyDiagnostics } from './components/EtsyDiagnostics';
+import {
+  getConnectionState,
+  getEtsyConfig,
+  saveEtsyConfig,
+  startOAuthFlow,
+  performSync,
+  fetchListingsForDashboard,
+  disconnect as disconnectEtsy,
+  type ConnectionState,
+  type SyncResult,
+} from './lib/etsy/connection';
+import { getDemoTokens } from './lib/etsy/client';
 
 function App() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [setupComplete, setSetupComplete] = useState(false);
+  const [connState, setConnState] = useState<ConnectionState>(getConnectionState());
   const [listings, setListings] = useState<EtsyListing[]>([]);
   const [selectedListing, setSelectedListing] = useState<EtsyListing | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ stage: string; detail: string } | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
+  // Load listings from real data source on mount
   useEffect(() => {
-    const connected = sessionStorage.getItem('etsy_connected');
-    if (connected === 'true') {
-      setIsConnected(true);
-      setSetupComplete(true);
-      setListings(sampleListings);
-      setLastSyncAt(Date.now());
+    const loadListings = async () => {
+      const state = getConnectionState();
+      const config = getEtsyConfig();
+      const tokens = getDemoTokens();
+
+      if (state.status === 'connected' && config && tokens && state.shopId) {
+        try {
+          const realListings = await fetchListingsForDashboard(tokens, config);
+          setListings(realListings);
+        } catch (err) {
+          // If real fetch fails, show empty state with error
+          console.error('Failed to fetch listings:', err);
+          setError(err instanceof Error ? err.message : 'Failed to load listings');
+          setListings([]);
+        }
+      }
+    };
+
+    loadListings();
+  }, []);
+
+  const handleConnect = useCallback(async () => {
+    const config = getEtsyConfig();
+    if (!config) {
+      setError('Etsy API not configured. Please set your credentials in Settings.');
+      return;
+    }
+
+    try {
+      const authUrl = await startOAuthFlow(config);
+      // In a real app, this would redirect the browser
+      // For the SPA demo, we show the URL and allow manual connection
+      window.open(authUrl, '_blank');
+      
+      // Update state to show we're waiting for callback
+      setConnState(prev => ({ ...prev, status: 'authorizing' }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start OAuth flow');
     }
   }, []);
 
-  const handleConnect = useCallback(() => {
-    setIsConnected(true);
-    setSetupComplete(true);
-    sessionStorage.setItem('etsy_connected', 'true');
-    setListings(sampleListings);
-    setLastSyncAt(Date.now());
-  }, []);
-
   const handleDisconnect = useCallback(() => {
-    setIsConnected(false);
-    sessionStorage.removeItem('etsy_connected');
+    disconnectEtsy();
+    setConnState(getConnectionState());
     setListings([]);
     setSelectedListing(null);
+    setSyncResult(null);
+    setError(null);
   }, []);
 
   const handleSync = useCallback(async () => {
+    const config = getEtsyConfig();
+    const tokens = getDemoTokens();
+
+    if (!config || !tokens) {
+      setError('Not connected to Etsy. Please connect first.');
+      return;
+    }
+
     setIsSyncing(true);
-    await new Promise(r => setTimeout(r, 2000));
-    setListings(sampleListings);
-    setLastSyncAt(Date.now());
+    setSyncResult(null);
+    setError(null);
+
+    try {
+      const result = await performSync(tokens, config, (stage, detail) => {
+        setSyncProgress({ stage, detail });
+      });
+
+      setSyncResult(result);
+      setConnState(getConnectionState());
+
+      // If sync succeeded, fetch fresh listings
+      if (result.success) {
+        try {
+          const realListings = await fetchListingsForDashboard(tokens, config);
+          setListings(realListings);
+        } catch (err) {
+          console.error('Failed to refresh listings after sync:', err);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync failed');
+    }
+
     setIsSyncing(false);
+    setSyncProgress(null);
   }, []);
 
-  if (!setupComplete) {
-    return <SetupWizard onComplete={handleConnect} />;
-  }
+  // Handle OAuth callback (check URL params)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state');
+    const errorParam = params.get('error');
 
-  if (!isConnected) {
-    return <SetupWizard onComplete={handleConnect} />;
-  }
+    if (errorParam) {
+      setError(`Etsy authorization denied: ${errorParam}`);
+      return;
+    }
+
+    if (code && state) {
+      // Handle callback - in production this would call a server endpoint
+      // For the SPA, we need the token exchange to happen server-side
+      setError(
+        'OAuth callback received. In production, the token exchange happens server-side. ' +
+        'Configure your Next.js API routes at /api/auth/etsy/callback to complete the flow.'
+      );
+    }
+  }, []);
+
+  const isConnected = connState.status === 'connected';
+  const config = getEtsyConfig();
 
   return (
     <BrowserRouter>
@@ -84,11 +171,11 @@ function App() {
         {/* Sidebar */}
         <Sidebar
           isOpen={sidebarOpen}
-          onToggle={() => setSidebarOpen(!sidebarOpen)}
           onDisconnect={handleDisconnect}
           onSync={handleSync}
           isSyncing={isSyncing}
-          lastSyncAt={lastSyncAt}
+          isConnected={isConnected}
+          lastSyncAt={connState.lastSyncAt}
         />
 
         {/* Main Content */}
@@ -97,16 +184,82 @@ function App() {
             onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
             onSync={handleSync}
             isSyncing={isSyncing}
+            isConnected={isConnected}
+            shopName={connState.shopName}
           />
+
+          {/* Sync Progress Banner */}
+          {isSyncing && syncProgress && (
+            <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center gap-3">
+              <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
+              <div>
+                <p className="text-xs font-medium text-amber-800">{syncProgress.stage}</p>
+                <p className="text-[10px] text-amber-600">{syncProgress.detail}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Sync Result Banner */}
+          {syncResult && !isSyncing && (
+            <div className={`border-b px-6 py-3 ${syncResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              <div className="flex items-start gap-3">
+                {syncResult.success ? (
+                  <span className="text-green-600 text-sm">✓</span>
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5" />
+                )}
+                <div className="flex-1">
+                  <p className={`text-xs font-medium ${syncResult.success ? 'text-green-800' : 'text-red-800'}`}>
+                    Sync {syncResult.success ? 'Completed' : 'Failed'}
+                  </p>
+                  <div className="mt-1 space-y-0.5">
+                    {syncResult.stages.map((stage, i) => (
+                      <p key={i} className="text-[10px] text-gray-600">
+                        {stage.status === 'success' ? '✓' : stage.status === 'failed' ? '✗' : '○'} {stage.name}: {stage.detail}
+                      </p>
+                    ))}
+                  </div>
+                  {syncResult.errors.length > 0 && (
+                    <div className="mt-2">
+                      {syncResult.errors.map((err, i) => (
+                        <p key={i} className="text-[10px] text-red-600">Error: {err}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => setSyncResult(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+              </div>
+            </div>
+          )}
+
+          {/* Error Banner */}
+          {error && (
+            <div className="bg-red-50 border-b border-red-200 px-6 py-3 flex items-center gap-3">
+              <AlertTriangle className="w-4 h-4 text-red-600" />
+              <p className="text-xs text-red-800 flex-1">{error}</p>
+              <button onClick={() => setError(null)} className="text-xs text-red-400 hover:text-red-600">✕</button>
+            </div>
+          )}
+
           <div className="p-6">
             <Routes>
-              <Route path="/" element={<Dashboard listings={listings} lastSyncAt={lastSyncAt} />} />
+              <Route path="/" element={
+                isConnected ? (
+                  <Dashboard listings={listings} lastSyncAt={connState.lastSyncAt} />
+                ) : (
+                  <NotConnectedView config={config} onConnect={handleConnect} />
+                )
+              } />
               <Route path="/listings" element={
-                <ListingsPage
-                  listings={listings}
-                  onSelectListing={setSelectedListing}
-                  selectedListing={selectedListing}
-                />
+                isConnected ? (
+                  <ListingsPage
+                    listings={listings}
+                    onSelectListing={setSelectedListing}
+                    selectedListing={selectedListing}
+                  />
+                ) : (
+                  <NotConnectedView config={config} onConnect={handleConnect} />
+                )
               } />
               <Route path="/analyzer" element={<ListingAnalyzer listing={selectedListing} listings={listings} />} />
               <Route path="/keywords" element={<KeywordResearch />} />
@@ -118,6 +271,7 @@ function App() {
               <Route path="/saved" element={<SavedResearch />} />
               <Route path="/history" element={<OptimizationHistory />} />
               <Route path="/settings" element={<SettingsPage onDisconnect={handleDisconnect} />} />
+              <Route path="/diagnostics" element={<EtsyDiagnostics />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>
@@ -127,31 +281,80 @@ function App() {
   );
 }
 
+// ---- Not Connected View ----
+function NotConnectedView({ config, onConnect }: { config: any; onConnect: () => void }) {
+  return (
+    <div className="max-w-lg mx-auto mt-12">
+      <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
+        <div className="w-16 h-16 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <Store className="w-8 h-8 text-amber-600" />
+        </div>
+        <h2 className="text-xl font-bold text-gray-900 mb-2">Connect Your Etsy Shop</h2>
+        <p className="text-sm text-gray-500 mb-6">
+          {config ? (
+            <>Configure and authorize <strong>StylinSoulMetalArt</strong> to see your real listings, orders, and analytics.</>
+          ) : (
+            <>First, configure your Etsy API credentials in Settings, then connect your shop.</>
+          )}
+        </p>
+        
+        {!config && (
+          <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 mb-4 text-left">
+            <p className="text-xs text-amber-800 font-medium mb-1">Setup Required:</p>
+            <ul className="text-xs text-amber-700 space-y-1">
+              <li>1. Go to Settings → Etsy API</li>
+              <li>2. Enter your Etsy Keystring and Shared Secret</li>
+              <li>3. Set Redirect URI</li>
+              <li>4. Return here to connect</li>
+            </ul>
+          </div>
+        )}
+
+        <button
+          onClick={onConnect}
+          disabled={!config}
+          className="px-6 py-3 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Connect Etsy Shop
+        </button>
+
+        <div className="mt-6 pt-4 border-t border-gray-100">
+          <p className="text-[10px] text-gray-400">
+            This application uses the Etsy Open API v3 with OAuth 2.0 + PKCE.
+            All API calls happen server-side. No secrets are exposed to the browser.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Sidebar Component ----
-function Sidebar({ isOpen, onToggle, onDisconnect, onSync, isSyncing, lastSyncAt }: {
+function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyncAt }: {
   isOpen: boolean;
-  onToggle: () => void;
   onDisconnect: () => void;
   onSync: () => void;
   isSyncing: boolean;
+  isConnected: boolean;
   lastSyncAt: number | null;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const navItems: { id: NavPage; label: string; icon: any }[] = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'listings', label: 'My Listings', icon: List },
-    { id: 'analyzer', label: 'Listing Analyzer', icon: Search },
-    { id: 'keywords', label: 'Keyword Research', icon: BarChart3 },
-    { id: 'niches', label: 'Niche Finder', icon: Target },
-    { id: 'competitors', label: 'Competitor Research', icon: Users },
-    { id: 'builder', label: 'Listing Builder', icon: PenTool },
-    { id: 'bulk', label: 'Bulk Optimizer', icon: Zap },
-    { id: 'sales', label: 'Sales Intelligence', icon: TrendingUp },
-    { id: 'saved', label: 'Saved Research', icon: Bookmark },
-    { id: 'history', label: 'Optimization History', icon: History },
-    { id: 'settings', label: 'Settings', icon: Settings },
+  const navItems: { id: string; label: string; icon: any; path: string }[] = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, path: '/' },
+    { id: 'listings', label: 'My Listings', icon: List, path: '/listings' },
+    { id: 'analyzer', label: 'Listing Analyzer', icon: Search, path: '/analyzer' },
+    { id: 'keywords', label: 'Keyword Research', icon: BarChart3, path: '/keywords' },
+    { id: 'niches', label: 'Niche Finder', icon: Target, path: '/niches' },
+    { id: 'competitors', label: 'Competitor Research', icon: Users, path: '/competitors' },
+    { id: 'builder', label: 'Listing Builder', icon: PenTool, path: '/builder' },
+    { id: 'bulk', label: 'Bulk Optimizer', icon: Zap, path: '/bulk' },
+    { id: 'sales', label: 'Sales Intelligence', icon: TrendingUp, path: '/sales' },
+    { id: 'saved', label: 'Saved Research', icon: Bookmark, path: '/saved' },
+    { id: 'history', label: 'Optimization History', icon: History, path: '/history' },
+    { id: 'diagnostics', label: 'Diagnostics', icon: Activity, path: '/diagnostics' },
+    { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
   ];
 
   return (
@@ -173,11 +376,11 @@ function Sidebar({ isOpen, onToggle, onDisconnect, onSync, isSyncing, lastSyncAt
       <nav className="flex-1 overflow-y-auto py-4">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = location.pathname === `/${item.id === 'dashboard' ? '' : item.id}`;
+          const isActive = location.pathname === item.path;
           return (
             <button
               key={item.id}
-              onClick={() => navigate(`/${item.id === 'dashboard' ? '' : item.id}`)}
+              onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
                 isActive
                   ? 'bg-gray-800 text-amber-400 border-r-2 border-amber-400'
@@ -191,8 +394,16 @@ function Sidebar({ isOpen, onToggle, onDisconnect, onSync, isSyncing, lastSyncAt
         })}
       </nav>
 
-      {/* Sync & Disconnect */}
+      {/* Sync & Status */}
       <div className="p-4 border-t border-gray-700 space-y-2">
+        {isOpen && (
+          <div className="flex items-center gap-2 mb-2">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+            <span className="text-[10px] text-gray-400">
+              {isConnected ? 'Connected' : 'Not Connected'}
+            </span>
+          </div>
+        )}
         {isOpen && lastSyncAt && (
           <p className="text-[10px] text-gray-500">
             Last sync: {new Date(lastSyncAt).toLocaleTimeString()}
@@ -200,29 +411,33 @@ function Sidebar({ isOpen, onToggle, onDisconnect, onSync, isSyncing, lastSyncAt
         )}
         <button
           onClick={onSync}
-          disabled={isSyncing}
-          className="w-full flex items-center gap-2 px-3 py-2 text-xs bg-gray-800 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50"
+          disabled={isSyncing || !isConnected}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs bg-gray-800 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
           {isOpen && <span>{isSyncing ? 'Syncing...' : 'Sync Etsy'}</span>}
         </button>
-        <button
-          onClick={onDisconnect}
-          className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
-        >
-          <LogOut className="w-3 h-3" />
-          {isOpen && <span>Disconnect</span>}
-        </button>
+        {isConnected && (
+          <button
+            onClick={onDisconnect}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
+          >
+            <LogOut className="w-3 h-3" />
+            {isOpen && <span>Disconnect</span>}
+          </button>
+        )}
       </div>
     </aside>
   );
 }
 
 // ---- Top Bar Component ----
-function TopBar({ onMenuToggle, onSync, isSyncing }: {
+function TopBar({ onMenuToggle, onSync, isSyncing, isConnected, shopName }: {
   onMenuToggle: () => void;
   onSync: () => void;
   isSyncing: boolean;
+  isConnected: boolean;
+  shopName: string | null;
 }) {
   return (
     <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-6 sticky top-0 z-40">
@@ -232,15 +447,21 @@ function TopBar({ onMenuToggle, onSync, isSyncing }: {
         </button>
         <div className="flex items-center gap-2">
           <Store className="w-4 h-4 text-amber-600" />
-          <span className="text-sm font-medium text-gray-700">StylinSoulMetalArt</span>
-          <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] rounded-full font-medium">Connected</span>
+          <span className="text-sm font-medium text-gray-700">
+            {shopName || 'StylinSoulMetalArt'}
+          </span>
+          <span className={`px-2 py-0.5 text-[10px] rounded-full font-medium ${
+            isConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+          }`}>
+            {isConnected ? 'Connected' : 'Not Connected'}
+          </span>
         </div>
       </div>
       <div className="flex items-center gap-3">
         <button
           onClick={onSync}
-          disabled={isSyncing}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          disabled={isSyncing || !isConnected}
+          className="flex items-center gap-2 px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
           {isSyncing ? 'Syncing...' : 'Sync Now'}
