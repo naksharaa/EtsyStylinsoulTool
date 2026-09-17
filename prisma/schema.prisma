@@ -1,0 +1,467 @@
+// ============================================
+// StylinSoulMetalArt - Prisma Schema
+// ============================================
+// Database models for the Etsy intelligence platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String?  @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  etsyConnection EtsyConnection?
+  savedResearch  SavedResearch[]
+  appSettings    AppSetting[]
+  syncJobs       SyncJob[]
+}
+
+model EtsyConnection {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id])
+  
+  etsyShopId       Int
+  etsyUserId       Int
+  shopName         String
+  currency         String   @default("USD")
+  
+  accessToken      String   // Encrypted
+  refreshToken     String   // Encrypted
+  tokenExpiresAt   DateTime
+  tokenScope       String?
+  
+  connectedAt      DateTime @default(now())
+  lastSyncAt       DateTime?
+  isActive         Boolean  @default(true)
+  
+  listings         Listing[]
+  orders           Order[]
+  
+  @@index([shopName])
+}
+
+model Shop {
+  id               String   @id @default(uuid())
+  etsyShopId       Int      @unique
+  shopName         String   @unique
+  title            String?
+  announcement     String?
+  currencyCode     String
+  listingCount     Int      @default(0)
+  favorers         Int      @default(0)
+  lastUpdated      DateTime @updatedAt
+  
+  @@index([shopName])
+}
+
+model Listing {
+  id               String   @id @default(uuid())
+  etsyListingId    Int      @unique
+  connectionId     String
+  connection       EtsyConnection @relation(fields: [connectionId], references: [id])
+  
+  title            String
+  description      String   @default("")
+  tags             String[] @default([])
+  taxonomyId       Int?
+  taxonomyPath     String[] @default([])
+  price            String
+  currencyCode     String   @default("USD")
+  quantity         Int
+  state            String   // active, draft, inactive, sold_out, expired
+  sku              String[] @default([])
+  materials        String[] @default([])
+  whoMade          String?
+  whenMade         String?
+  isSupply         Boolean  @default(false)
+  isDigital        Boolean  @default(false)
+  url              String   @default("")
+  views            Int      @default(0)
+  numFavorers      Int      @default(0)
+  
+  creationTsz      DateTime
+  modifiedTsz      DateTime
+  stateTsz         DateTime?
+  endingTsz        DateTime?
+  
+  personalized     Boolean  @default(false)
+  personalizationInstructions String?
+  
+  hasVariations    Boolean  @default(false)
+  shippingProfileId Int?
+  
+  // Internal tracking
+  seoScore         Int?
+  optimizationStatus String? // optimized, needs_improvement, not_analyzed
+  performance      String?   // winner, average, needs_improvement, not_set
+  nicheCategory    String?
+  
+  lastSyncedAt     DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  images           ListingImage[]
+  inventory        ListingInventory[]
+  variations       ListingVariation[]
+  snapshots        ListingSnapshot[]
+  changes          ListingChange[]
+  tags_            ListingTag[]
+  transactions     Transaction[]
+  optimizationReports OptimizationReport[]
+  
+  @@index([connectionId])
+  @@index([state])
+  @@index([etsyListingId])
+  @@index([nicheCategory])
+}
+
+model ListingImage {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  etsyImageId      Int?
+  urlFull          String
+  urlLarge         String?
+  urlMedium        String?
+  urlSmall         String?
+  rank             Int      @default(0)
+  hexCode          String?
+  
+  @@index([listingId])
+}
+
+model ListingInventory {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  productId        Int
+  sku              String[] @default([])
+  isDeleted        Boolean  @default(false)
+  propertyValues   Json     @default("[]") // Array of {property_id, property_name, values}
+  
+  @@index([listingId])
+}
+
+model ListingVariation {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  // Etsy supports up to 3 variations
+  propertyId       Int
+  propertyName     String
+  valueId          Int?
+  formattedValue   String
+  variationIndex   Int      // 0, 1, or 2 (supports 3 variations)
+  
+  @@index([listingId])
+  @@index([variationIndex])
+}
+
+model ListingTag {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  tag              String
+  source           String?  // etsy, ai, manual
+  
+  @@index([listingId])
+  @@index([tag])
+}
+
+model ListingSnapshot {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  title            String
+  description      String
+  tags             String[] @default([])
+  price            String
+  quantity         Int
+  personalizationInstructions String?
+  
+  snapshotAt       DateTime @default(now())
+  changeReason     String?
+  
+  changes          ListingChange[]
+  
+  @@index([listingId])
+  @@index([snapshotAt])
+}
+
+model ListingChange {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  snapshotId       String
+  snapshot         ListingSnapshot @relation(fields: [snapshotId], references: [id])
+  
+  field            String   // title, description, tags, price, etc.
+  oldValue         String
+  newValue         String
+  
+  changedAt        DateTime @default(now())
+  rolledBack       Boolean  @default(false)
+  
+  @@index([listingId])
+  @@index([snapshotId])
+}
+
+model Order {
+  id               String   @id @default(uuid())
+  etsyReceiptId    Int      @unique
+  connectionId     String
+  connection       EtsyConnection @relation(fields: [connectionId], references: [id])
+  
+  buyerUserId      Int?
+  name             String?
+  addressLine1     String?
+  addressLine2     String?
+  city             String?
+  state            String?
+  zip              String?
+  countryId        Int?
+  
+  paymentMethod    String
+  quantity         Int
+  totalPrice       String
+  subtotalPrice    String?
+  shippingCost     String?
+  taxCost          String?
+  currencyCode     String
+  
+  wasPaidTsz       DateTime
+  createdTsz       DateTime
+  
+  transactions     Transaction[]
+  
+  @@index([connectionId])
+  @@index([createdTsz])
+}
+
+model Transaction {
+  id               String   @id @default(uuid())
+  etsyTransactionId Int     @unique
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  orderId          String
+  order            Order    @relation(fields: [orderId], references: [id])
+  
+  title            String
+  buyerUserId      Int?
+  quantity         Int
+  price            String
+  currencyCode     String
+  isDigital        Boolean  @default(false)
+  productId        Int?
+  variations       Json?
+  
+  createTsz        DateTime
+  paidTsz          DateTime?
+  shipTsz          DateTime?
+  
+  @@index([listingId])
+  @@index([orderId])
+}
+
+model Keyword {
+  id               String   @id @default(uuid())
+  keyword          String
+  source           String   // marketplace, ai, competitor
+  
+  @@index([keyword])
+}
+
+model KeywordResearch {
+  id               String   @id @default(uuid())
+  userId           String
+  seedKeyword      String
+  results          Json     // Array of KeywordResult
+  clusters         Json     // Array of KeywordCluster
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([userId])
+  @@index([seedKeyword])
+}
+
+model KeywordMetric {
+  id               String   @id @default(uuid())
+  keyword          String
+  researchId       String
+  
+  resultCount      Int      @default(0)
+  competitionLevel String?
+  titleFrequency   Int      @default(0)
+  tagFrequency     Int      @default(0)
+  medianPrice      Float    @default(0)
+  averagePrice     Float    @default(0)
+  minPrice         Float    @default(0)
+  maxPrice         Float    @default(0)
+  shopConcentration Float   @default(0)
+  personalizationPrevalence Float @default(0)
+  longTailStrength Float    @default(0)
+  buyerIntent      String?
+  occasion         String?
+  recipient        String?
+  niche            String?
+  
+  measuredAt       DateTime @default(now())
+  
+  @@index([keyword])
+  @@index([researchId])
+}
+
+model Niche {
+  id               String   @id @default(uuid())
+  name             String
+  broadCategory    String?
+  
+  @@index([name])
+}
+
+model NicheResearch {
+  id               String   @id @default(uuid())
+  userId           String
+  seedNiche        String
+  results          Json     // Array of NicheOpportunity
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([userId])
+  @@index([seedNiche])
+}
+
+model CompetitorSearch {
+  id               String   @id @default(uuid())
+  userId           String
+  query            String
+  listings         Json     // Array of CompetitorListing
+  commonKeywords   String[] @default([])
+  keywordGaps      String[] @default([])
+  priceBandMin     Float    @default(0)
+  priceBandMax     Float    @default(0)
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([userId])
+  @@index([query])
+}
+
+model OptimizationReport {
+  id               String   @id @default(uuid())
+  listingId        String
+  listing          Listing  @relation(fields: [listingId], references: [id])
+  
+  currentScore     Int
+  proposedScore    Int?
+  currentTitle     String
+  proposedTitle    String?
+  currentTags      String[] @default([])
+  proposedTags     String[] @default([])
+  currentDescription String
+  proposedDescription String?
+  
+  applied          Boolean  @default(false)
+  appliedAt        DateTime?
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([listingId])
+}
+
+model OptimizationSuggestion {
+  id               String   @id @default(uuid())
+  reportId         String
+  field            String   // title, tags, description, attributes
+  suggestion       String
+  reason           String
+  priority         String   // high, medium, low
+  accepted         Boolean  @default(false)
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([reportId])
+}
+
+model SavedResearch {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  
+  type             String   // keyword, niche, competitor, listing_idea, optimization
+  title            String
+  data             Json
+  
+  folder           String   @default("researching") // researching, design_needed, ready_to_list, listed, rejected
+  tags             String[] @default([])
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([folder])
+  @@index([type])
+}
+
+model AiGeneration {
+  id               String   @id @default(uuid())
+  userId           String
+  
+  type             String   // keywords, niches, listing, titles, tags, description, analysis
+  input            Json
+  output           Json
+  model            String
+  tokensUsed       Int      @default(0)
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([userId])
+  @@index([type])
+}
+
+model SyncJob {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  
+  type             String   // full, incremental
+  status           String   // pending, running, completed, failed
+  
+  listingsProcessed Int     @default(0)
+  ordersProcessed  Int      @default(0)
+  errors           String[] @default([])
+  apiRequests      Int      @default(0)
+  
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  
+  @@index([userId])
+  @@index([status])
+}
+
+model AppSetting {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  
+  key              String
+  value            String
+  
+  updatedAt        DateTime @updatedAt
+  
+  @@unique([userId, key])
+}
