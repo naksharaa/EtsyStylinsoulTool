@@ -9,8 +9,9 @@ interface SetupWizardProps {
 export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [step, setStep] = useState(1);
   const [keystring, setKeystring] = useState('');
+  const [sharedSecret, setSharedSecret] = useState('');
   const [shopName, setShopName] = useState('StylinSoulMetalArt');
-  const [redirectUri, setRedirectUri] = useState('http://localhost:3000/api/auth/etsy/callback');
+  const [redirectUri, setRedirectUri] = useState(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
   const totalSteps = 7;
 
   const steps = [
@@ -32,6 +33,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       }
       saveEtsyConfig({
         keystring: keystring.trim(),
+        sharedSecret: sharedSecret.trim(),
         redirectUri: redirectUri.trim(),
         shopName: shopName.trim(),
       });
@@ -118,8 +120,14 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                     placeholder="Enter your Etsy API keystring"
                     className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
-                  <label className="text-xs font-medium text-gray-700">Shared Secret</label>
-                  <input type="password" placeholder="Enter shared secret (stored server-side only)" className="w-full px-3 py-2 border rounded-lg text-sm" />
+                  <label className="text-xs font-medium text-gray-700">Shared Secret *</label>
+                  <input
+                    type="password"
+                    value={sharedSecret}
+                    onChange={(e) => setSharedSecret(e.target.value)}
+                    placeholder="Enter your Etsy shared secret"
+                    className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  />
                   <label className="text-xs font-medium text-gray-700">Redirect URI</label>
                   <input
                     type="text"

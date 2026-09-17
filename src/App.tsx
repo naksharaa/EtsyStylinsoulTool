@@ -32,13 +32,15 @@ import {
   getEtsyConfig,
   saveEtsyConfig,
   startOAuthFlow,
+  handleOAuthCallback,
+  verifyShop,
   performSync,
   fetchListingsForDashboard,
   disconnect as disconnectEtsy,
   type ConnectionState,
   type SyncResult,
 } from './lib/etsy/connection';
-import { getDemoTokens } from './lib/etsy/client';
+import { getTokens } from './lib/etsy/client';
 
 function App() {
   const [connState, setConnState] = useState<ConnectionState>(getConnectionState());
@@ -55,11 +57,11 @@ function App() {
     const loadListings = async () => {
       const state = getConnectionState();
       const config = getEtsyConfig();
-      const tokens = getDemoTokens();
+      const tokens = getTokens();
 
       if (state.status === 'connected' && config && tokens && state.shopId) {
         try {
-          const realListings = await fetchListingsForDashboard(tokens, config);
+          const realListings = await fetchListingsForDashboard(config, tokens);
           setListings(realListings);
         } catch (err) {
           // If real fetch fails, show empty state with error
@@ -76,18 +78,18 @@ function App() {
   const handleConnect = useCallback(async () => {
     const config = getEtsyConfig();
     if (!config) {
-      setError('Etsy API not configured. Please set your credentials in Settings.');
+      setError('Etsy API not configured. Please set your credentials in Settings first.');
+      return;
+    }
+    if (!config.keystring || !config.sharedSecret) {
+      setError('Both Keystring and Shared Secret are required. Please update Settings.');
       return;
     }
 
     try {
       const authUrl = await startOAuthFlow(config);
-      // In a real app, this would redirect the browser
-      // For the SPA demo, we show the URL and allow manual connection
-      window.open(authUrl, '_blank');
-      
-      // Update state to show we're waiting for callback
-      setConnState(prev => ({ ...prev, status: 'authorizing' }));
+      // Redirect in same window so callback returns to this app
+      window.location.href = authUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start OAuth flow');
     }
@@ -104,7 +106,7 @@ function App() {
 
   const handleSync = useCallback(async () => {
     const config = getEtsyConfig();
-    const tokens = getDemoTokens();
+    const tokens = getTokens();
 
     if (!config || !tokens) {
       setError('Not connected to Etsy. Please connect first.');
@@ -116,7 +118,7 @@ function App() {
     setError(null);
 
     try {
-      const result = await performSync(tokens, config, (stage, detail) => {
+      const result = await performSync(config, tokens, (stage, detail) => {
         setSyncProgress({ stage, detail });
       });
 
@@ -126,7 +128,7 @@ function App() {
       // If sync succeeded, fetch fresh listings
       if (result.success) {
         try {
-          const realListings = await fetchListingsForDashboard(tokens, config);
+          const realListings = await fetchListingsForDashboard(config, tokens);
           setListings(realListings);
         } catch (err) {
           console.error('Failed to refresh listings after sync:', err);
@@ -142,24 +144,57 @@ function App() {
 
   // Handle OAuth callback (check URL params)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get('code');
-    const state = params.get('state');
-    const errorParam = params.get('error');
+    const handleCallback = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const stateParam = params.get('state');
+      const errorParam = params.get('error');
+      const errorDesc = params.get('error_description');
 
-    if (errorParam) {
-      setError(`Etsy authorization denied: ${errorParam}`);
-      return;
-    }
+      if (errorParam) {
+        setError(`Etsy authorization denied: ${errorParam}${errorDesc ? ' - ' + errorDesc : ''}`);
+        // Clean URL
+        window.history.replaceState({}, '', window.location.pathname);
+        return;
+      }
 
-    if (code && state) {
-      // Handle callback - in production this would call a server endpoint
-      // For the SPA, we need the token exchange to happen server-side
-      setError(
-        'OAuth callback received. In production, the token exchange happens server-side. ' +
-        'Configure your Next.js API routes at /api/auth/etsy/callback to complete the flow.'
-      );
-    }
+      if (code && stateParam) {
+        const cfg = getEtsyConfig();
+        if (!cfg) {
+          setError('No Etsy configuration found. Please configure API credentials in Settings.');
+          window.history.replaceState({}, '', window.location.pathname);
+          return;
+        }
+
+        try {
+          // Clean URL immediately to prevent re-processing on refresh
+          window.history.replaceState({}, '', window.location.pathname);
+          
+          setError('Exchanging authorization code for access token...');
+          
+          const result = await handleOAuthCallback(code, stateParam, cfg);
+          
+          if (result.success && result.tokens) {
+            // Verify the shop
+            const verifyResult = await verifyShop(cfg, result.tokens);
+            if (verifyResult.success) {
+              setConnState(getConnectionState());
+              setError(null);
+              // Auto-sync after successful connection
+              handleSync();
+            } else {
+              setError(verifyResult.error || 'Shop verification failed');
+            }
+          } else {
+            setError(result.error || 'Token exchange failed');
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'OAuth callback processing failed');
+        }
+      }
+    };
+
+    handleCallback();
   }, []);
 
   const isConnected = connState.status === 'connected';

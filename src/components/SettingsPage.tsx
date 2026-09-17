@@ -16,7 +16,8 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
   
   // Form state
   const [keystring, setKeystring] = useState(config?.keystring || '');
-  const [redirectUri, setRedirectUri] = useState(config?.redirectUri || 'http://localhost:3000/api/auth/etsy/callback');
+  const [sharedSecret, setSharedSecret] = useState(config?.sharedSecret || '');
+  const [redirectUri, setRedirectUri] = useState(config?.redirectUri || window.location.origin);
   const [shopName, setShopName] = useState(config?.shopName || 'StylinSoulMetalArt');
   const [saved, setSaved] = useState(false);
 
@@ -32,6 +33,7 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
     
     const newConfig: EtsyConfig = {
       keystring: keystring.trim(),
+      sharedSecret: sharedSecret.trim(),
       redirectUri: redirectUri.trim(),
       shopName: shopName.trim(),
     };
@@ -175,11 +177,13 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
                 <label className="text-xs font-medium text-gray-700">Shared Secret *</label>
                 <input
                   type="password"
+                  value={sharedSecret}
+                  onChange={(e) => setSharedSecret(e.target.value)}
                   placeholder="Enter your Etsy shared secret"
                   className="w-full mt-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                 />
                 <p className="text-[10px] text-gray-400 mt-1">
-                  Note: Shared secret is used server-side only for token exchange. It is never stored in the browser.
+                  Required for x-api-key header on all API calls. Stored locally for this personal tool.
                 </p>
               </div>
               <div>
