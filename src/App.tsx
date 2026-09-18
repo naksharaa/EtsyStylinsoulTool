@@ -95,8 +95,23 @@ function App() {
         setError('Both Keystring and Shared Secret are required. Please update Settings.');
         return;
       }
+      
+      // Validate redirect URI
+      if (!config.redirectUri) {
+        setError('Redirect URI is required. Please set it in Settings.');
+        return;
+      }
+      if (!config.redirectUri.startsWith('https://')) {
+        setError(`Redirect URI must use HTTPS. Current: ${config.redirectUri}. Please update in Settings.`);
+        return;
+      }
 
       const authUrl = await startOAuthFlow(config);
+      
+      // Show what we're sending for debugging
+      console.log('Redirecting to Etsy OAuth:', authUrl);
+      console.log('Redirect URI being used:', config.redirectUri);
+      
       window.location.href = authUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start OAuth flow');

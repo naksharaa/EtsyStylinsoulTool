@@ -31,6 +31,18 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
         alert('Etsy Keystring is required to continue');
         return;
       }
+      if (!redirectUri.trim()) {
+        alert('Redirect URI is required to continue');
+        return;
+      }
+      if (!redirectUri.trim().startsWith('https://')) {
+        const confirm = window.confirm(
+          '⚠️ Warning: Redirect URI should use HTTPS for production.\n\n' +
+          'Etsy requires HTTPS redirect URIs. Using HTTP may cause authentication to fail.\n\n' +
+          'Are you sure you want to continue?'
+        );
+        if (!confirm) return;
+      }
       saveEtsyConfig({
         keystring: keystring.trim(),
         sharedSecret: sharedSecret.trim(),
@@ -128,13 +140,22 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                     placeholder="Enter your Etsy shared secret"
                     className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
-                  <label className="text-xs font-medium text-gray-700">Redirect URI</label>
+                  <label className="text-xs font-medium text-gray-700">Redirect URI *</label>
                   <input
                     type="text"
                     value={redirectUri}
                     onChange={(e) => setRedirectUri(e.target.value)}
+                    placeholder="https://your-app.vercel.app"
                     className="w-full px-3 py-2 border rounded-lg text-sm"
                   />
+                  <p className="text-[10px] text-amber-600">
+                    ⚠️ Must be HTTPS and match exactly what's in your Etsy app
+                  </p>
+                  {typeof window !== 'undefined' && (
+                    <p className="text-[10px] text-gray-500">
+                      Your app URL: <code className="bg-gray-100 px-1 rounded">{window.location.origin}</code>
+                    </p>
+                  )}
                   <label className="text-xs font-medium text-gray-700">Shop Name</label>
                   <input
                     type="text"
