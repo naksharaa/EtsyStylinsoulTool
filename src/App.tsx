@@ -1,11 +1,4 @@
-// ============================================
-// StylinSoulMetalArt - Etsy Intelligence App
-// Main Application Component
-// ============================================
-// IMPORTANT: This app uses REAL Etsy data.
-// No mock/sample data is used in production flows.
-
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, List, Search, Target, Users, PenTool, Settings,
@@ -43,7 +36,24 @@ import {
 import { getTokens } from './lib/etsy/client';
 
 function App() {
-  const [connState, setConnState] = useState<ConnectionState>(getConnectionState());
+  const [connState, setConnState] = useState<ConnectionState>(() => {
+    try {
+      return getConnectionState();
+    } catch {
+      return {
+        status: 'disconnected',
+        shopName: null,
+        shopId: null,
+        userId: null,
+        scopes: [],
+        tokenExpiresAt: null,
+        lastApiCall: null,
+        lastSyncAt: null,
+        error: null,
+      };
+    }
+  });
+  
   const [listings, setListings] = useState<EtsyListing[]>([]);
   const [selectedListing, setSelectedListing] = useState<EtsyListing | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -55,20 +65,19 @@ function App() {
   // Load listings from real data source on mount
   useEffect(() => {
     const loadListings = async () => {
-      const state = getConnectionState();
-      const config = getEtsyConfig();
-      const tokens = getTokens();
+      try {
+        const state = getConnectionState();
+        const config = getEtsyConfig();
+        const tokens = getTokens();
 
-      if (state.status === 'connected' && config && tokens && state.shopId) {
-        try {
+        if (state.status === 'connected' && config && tokens && state.shopId) {
           const realListings = await fetchListingsForDashboard(config, tokens);
           setListings(realListings);
-        } catch (err) {
-          // If real fetch fails, show empty state with error
-          console.error('Failed to fetch listings:', err);
-          setError(err instanceof Error ? err.message : 'Failed to load listings');
-          setListings([]);
         }
+      } catch (err) {
+        console.error('Failed to fetch listings:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load listings');
+        setListings([]);
       }
     };
 
@@ -76,19 +85,18 @@ function App() {
   }, []);
 
   const handleConnect = useCallback(async () => {
-    const config = getEtsyConfig();
-    if (!config) {
-      setError('Etsy API not configured. Please set your credentials in Settings first.');
-      return;
-    }
-    if (!config.keystring || !config.sharedSecret) {
-      setError('Both Keystring and Shared Secret are required. Please update Settings.');
-      return;
-    }
-
     try {
+      const config = getEtsyConfig();
+      if (!config) {
+        setError('Etsy API not configured. Please set your credentials in Settings first.');
+        return;
+      }
+      if (!config.keystring || !config.sharedSecret) {
+        setError('Both Keystring and Shared Secret are required. Please update Settings.');
+        return;
+      }
+
       const authUrl = await startOAuthFlow(config);
-      // Redirect in same window so callback returns to this app
       window.location.href = authUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start OAuth flow');
@@ -105,19 +113,19 @@ function App() {
   }, []);
 
   const handleSync = useCallback(async () => {
-    const config = getEtsyConfig();
-    const tokens = getTokens();
-
-    if (!config || !tokens) {
-      setError('Not connected to Etsy. Please connect first.');
-      return;
-    }
-
-    setIsSyncing(true);
-    setSyncResult(null);
-    setError(null);
-
     try {
+      const config = getEtsyConfig();
+      const tokens = getTokens();
+
+      if (!config || !tokens) {
+        setError('Not connected to Etsy. Please connect first.');
+        return;
+      }
+
+      setIsSyncing(true);
+      setSyncResult(null);
+      setError(null);
+
       const result = await performSync(config, tokens, (stage, detail) => {
         setSyncProgress({ stage, detail });
       });
@@ -125,62 +133,51 @@ function App() {
       setSyncResult(result);
       setConnState(getConnectionState());
 
-      // If sync succeeded, fetch fresh listings
-      if (result.success) {
-        try {
-          const realListings = await fetchListingsForDashboard(config, tokens);
-          setListings(realListings);
-        } catch (err) {
-          console.error('Failed to refresh listings after sync:', err);
-        }
+      if (result.success && result.listings) {
+        setListings(result.listings);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setIsSyncing(false);
+      setSyncProgress(null);
     }
-
-    setIsSyncing(false);
-    setSyncProgress(null);
   }, []);
 
-  // Handle OAuth callback (check URL params)
+  // Handle OAuth callback
   useEffect(() => {
     const handleCallback = async () => {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get('code');
-      const stateParam = params.get('state');
-      const errorParam = params.get('error');
-      const errorDesc = params.get('error_description');
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        const stateParam = params.get('state');
+        const errorParam = params.get('error');
+        const errorDesc = params.get('error_description');
 
-      if (errorParam) {
-        setError(`Etsy authorization denied: ${errorParam}${errorDesc ? ' - ' + errorDesc : ''}`);
-        // Clean URL
-        window.history.replaceState({}, '', window.location.pathname);
-        return;
-      }
-
-      if (code && stateParam) {
-        const cfg = getEtsyConfig();
-        if (!cfg) {
-          setError('No Etsy configuration found. Please configure API credentials in Settings.');
+        if (errorParam) {
+          setError(`Etsy authorization denied: ${errorParam}${errorDesc ? ' - ' + errorDesc : ''}`);
           window.history.replaceState({}, '', window.location.pathname);
           return;
         }
 
-        try {
-          // Clean URL immediately to prevent re-processing on refresh
+        if (code && stateParam) {
+          const cfg = getEtsyConfig();
+          if (!cfg) {
+            setError('No Etsy configuration found. Please configure API credentials in Settings.');
+            window.history.replaceState({}, '', window.location.pathname);
+            return;
+          }
+
           window.history.replaceState({}, '', window.location.pathname);
-          
           setError('Exchanging authorization code for access token...');
           
           const result = await handleOAuthCallback(code, stateParam, cfg);
           
           if (result.success && result.tokens) {
-            // Verify the shop
             const verifyResult = await verifyShop(cfg, result.tokens);
             if (verifyResult.success) {
               setConnState(getConnectionState());
               setError(null);
-              // Auto-sync after successful connection
               handleSync();
             } else {
               setError(verifyResult.error || 'Shop verification failed');
@@ -188,9 +185,9 @@ function App() {
           } else {
             setError(result.error || 'Token exchange failed');
           }
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'OAuth callback processing failed');
         }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'OAuth callback processing failed');
       }
     };
 
@@ -203,7 +200,6 @@ function App() {
   return (
     <HashRouter>
       <div className="min-h-screen bg-gray-50 flex">
-        {/* Sidebar */}
         <Sidebar
           isOpen={sidebarOpen}
           onDisconnect={handleDisconnect}
@@ -213,7 +209,6 @@ function App() {
           lastSyncAt={connState.lastSyncAt}
         />
 
-        {/* Main Content */}
         <main className={`flex-1 transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-16'}`}>
           <TopBar
             onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
@@ -223,7 +218,6 @@ function App() {
             shopName={connState.shopName}
           />
 
-          {/* Sync Progress Banner */}
           {isSyncing && syncProgress && (
             <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center gap-3">
               <RefreshCw className="w-4 h-4 text-amber-600 animate-spin" />
@@ -234,7 +228,6 @@ function App() {
             </div>
           )}
 
-          {/* Sync Result Banner */}
           {syncResult && !isSyncing && (
             <div className={`border-b px-6 py-3 ${syncResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <div className="flex items-start gap-3">
@@ -267,7 +260,6 @@ function App() {
             </div>
           )}
 
-          {/* Error Banner */}
           {error && (
             <div className="bg-red-50 border-b border-red-200 px-6 py-3 flex items-center gap-3">
               <AlertTriangle className="w-4 h-4 text-red-600" />
@@ -316,7 +308,6 @@ function App() {
   );
 }
 
-// ---- Not Connected View ----
 function NotConnectedView({ config, onConnect }: { config: any; onConnect: () => void }) {
   return (
     <div className="max-w-lg mx-auto mt-12">
@@ -364,7 +355,6 @@ function NotConnectedView({ config, onConnect }: { config: any; onConnect: () =>
   );
 }
 
-// ---- Sidebar Component ----
 function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyncAt }: {
   isOpen: boolean;
   onDisconnect: () => void;
@@ -394,7 +384,6 @@ function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyn
 
   return (
     <aside className={`fixed left-0 top-0 h-full bg-gray-900 text-white transition-all duration-300 z-50 flex flex-col ${isOpen ? 'w-64' : 'w-16'}`}>
-      {/* Logo */}
       <div className="p-4 border-b border-gray-700 flex items-center gap-3">
         <div className="w-8 h-8 bg-gradient-to-br from-amber-400 to-orange-600 rounded-lg flex items-center justify-center flex-shrink-0">
           <Sparkles className="w-4 h-4 text-white" />
@@ -407,7 +396,6 @@ function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyn
         )}
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-4">
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -429,7 +417,6 @@ function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyn
         })}
       </nav>
 
-      {/* Sync & Status */}
       <div className="p-4 border-t border-gray-700 space-y-2">
         {isOpen && (
           <div className="flex items-center gap-2 mb-2">
@@ -466,7 +453,6 @@ function Sidebar({ isOpen, onDisconnect, onSync, isSyncing, isConnected, lastSyn
   );
 }
 
-// ---- Top Bar Component ----
 function TopBar({ onMenuToggle, onSync, isSyncing, isConnected, shopName }: {
   onMenuToggle: () => void;
   onSync: () => void;
