@@ -31,6 +31,20 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
       return;
     }
     
+    if (!redirectUri.trim()) {
+      alert('Redirect URI is required');
+      return;
+    }
+    
+    if (!redirectUri.trim().startsWith('https://')) {
+      const confirm = window.confirm(
+        '⚠️ Warning: Redirect URI should use HTTPS for production.\n\n' +
+        'Etsy requires HTTPS redirect URIs. Using HTTP may cause authentication to fail.\n\n' +
+        'Are you sure you want to save this configuration?'
+      );
+      if (!confirm) return;
+    }
+    
     const newConfig: EtsyConfig = {
       keystring: keystring.trim(),
       sharedSecret: sharedSecret.trim(),
@@ -162,6 +176,26 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
               </p>
             </div>
 
+            <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+              <p className="text-xs text-amber-800 font-medium mb-2">⚠️ Redirect URI Requirements:</p>
+              <ul className="text-xs text-amber-700 space-y-1 ml-4 list-disc">
+                <li>Must use <strong>HTTPS</strong> (not HTTP)</li>
+                <li>Must match <strong>EXACTLY</strong> what's in your Etsy app settings</li>
+                <li>No trailing slashes or query parameters</li>
+                <li>Use your deployed app URL (shown below)</li>
+              </ul>
+              {typeof window !== 'undefined' && (
+                <div className="mt-2 p-2 bg-white rounded border border-amber-300">
+                  <p className="text-xs text-gray-700">
+                    <strong>Your app URL:</strong> <code className="bg-gray-100 px-1 rounded">{window.location.origin}</code>
+                  </p>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Copy this URL and register it in your Etsy app settings
+                  </p>
+                </div>
+              )}
+            </div>
+
             <div className="space-y-3">
               <div>
                 <label className="text-xs font-medium text-gray-700">Etsy Keystring (API Key) *</label>
@@ -192,10 +226,14 @@ export function SettingsPage({ onDisconnect }: SettingsPageProps) {
                   type="text"
                   value={redirectUri}
                   onChange={(e) => setRedirectUri(e.target.value)}
+                  placeholder="https://your-app.vercel.app"
                   className="w-full mt-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                 />
                 <p className="text-[10px] text-gray-400 mt-1">
-                  This must match exactly what's registered in your Etsy developer app.
+                  ⚠️ Must be HTTPS and match EXACTLY what's registered in your Etsy app settings
+                </p>
+                <p className="text-[10px] text-amber-600 mt-1">
+                  Current app URL: {typeof window !== 'undefined' ? window.location.origin : 'unknown'}
                 </p>
               </div>
               <div>
